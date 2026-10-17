@@ -381,8 +381,9 @@ service and a second one to hold a cron would break that. There are **two**
 runners and confusing them wastes a day:
 
 - **The estimator's hourly loop** (`_reminder_loop`) runs unconditionally and is
-  where anything daily belongs: both backups, the CRM digest, and
-  `_check_hail_nightly()`. Each job takes its own `O_EXCL` lockfile so two
+  where anything daily belongs: both backups, the CRM digest,
+  `_check_hail_nightly()` and the mid-roof memory fill
+  (`_check_inspection_prefill()`). Each job takes its own `O_EXCL` lockfile so two
   workers cannot both run it.
 - **`agents/scheduler.py`** is Nimbus's weekly runner and is **off unless
   `NIMBUS_SCHEDULER=1`**, which is easy to miss: the jobs exist, the page lists

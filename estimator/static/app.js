@@ -6764,6 +6764,172 @@ function _jxVerifiedProfileMarkup(sel) {
       <div class="jx-vp-head">Code data not yet verified — the customer will see the shared Colorado baseline until a manager verifies this jurisdiction.</div>
     </div>`;
 }
+/* ── Mid-roof inspection, remembered per jurisdiction ──────────────────
+   One record per jurisdiction, kept on the server (inspections.py), not on
+   the estimate. It is looked up once: by the AI at the first signing in that
+   jurisdiction, by anyone pressing "Look it up", or typed in by a manager.
+   Every later job there reads it. A manager's answer is stored as confirmed
+   and the AI never replaces it. The permit packet, the work order and the
+   rep's email after signing all print the same verdict. */
+const _jxInsp = {};            // jurisdiction id → { loaded, record, busy, error, editing }
+let _jxInspKinds = {};         // roof-kind key → label, served by the API
+function _jxInspState(id) { return _jxInsp[id] || (_jxInsp[id] = { loaded:false }); }
+function _jxInspFetch(id) {
+  const st = _jxInspState(id);
+  if (st.loaded || st.loading) return;
+  st.loading = true;
+  fetch(`/api/jurisdictions/${encodeURIComponent(id)}/inspections`)
+    .then(r => r.json())
+    .then(res => {
+      st.record = (res && res.record) || null;
+      if (res && res.roof_kinds) _jxInspKinds = res.roof_kinds;
+    })
+    .catch(() => { st.error = 'Could not load the mid-roof inspection record.'; })
+    .finally(() => { st.loading = false; st.loaded = true; rerenderJurisdictionPanels(); });
+}
+function _jxInspSend(id, method, path, body) {
+  const st = _jxInspState(id);
+  if (st.busy) return Promise.resolve(null);
+  st.busy = true; st.error = '';
+  rerenderJurisdictionPanels();
+  const opts = { method, headers: { 'Content-Type':'application/json' } };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  return fetch(`/api/jurisdictions/${encodeURIComponent(id)}/inspections${path}`, opts)
+    .then(r => r.json().then(j => ({ ok: r.ok && j && j.ok, j: j || {} })))
+    .then(({ ok, j }) => {
+      if (j.record !== undefined) st.record = j.record;
+      if (!ok) st.error = j.error || 'Something went wrong.';
+      return ok;
+    })
+    .catch(e => { st.error = String(e); return false; })
+    .finally(() => { st.busy = false; rerenderJurisdictionPanels(); });
+}
+function jxInspLookup(id, force) { _jxInspSend(id, 'POST', '/lookup', { force: !!force }); }
+function jxInspEdit(id, on) {
+  const st = _jxInspState(id);
+  st.editing = !!on; st.error = '';
+  rerenderJurisdictionPanels();
+}
+function jxInspConfirm(id) {
+  // Confirm the AI's answer exactly as it stands.
+  const r = _jxInspState(id).record || {};
+  _jxInspSend(id, 'PUT', '', {
+    mid_roof: r.mid_roof, applies_to: r.applies_to || [], timing: r.timing || '',
+    photos_accepted: r.photos_accepted, notes: r.notes || '', source_url: r.source_url || '',
+  });
+}
+function jxInspSave(id) {
+  const el = sfx => document.getElementById(`jxi-${sfx}-${id}`);
+  const kinds = Array.from(document.querySelectorAll(`input[data-jxi-kind="${id}"]:checked`)).map(x => x.value);
+  const ph = el('photos').value;
+  _jxInspSend(id, 'PUT', '', {
+    mid_roof: el('mid').value,
+    applies_to: kinds,
+    timing: el('timing').value,
+    photos_accepted: ph === 'yes' ? true : ph === 'no' ? false : 'unknown',
+    notes: el('notes').value,
+    source_url: el('src').value,
+  }).then(ok => { if (ok) { _jxInspState(id).editing = false; rerenderJurisdictionPanels(); } });
+}
+function jxInspClear(id) {
+  if (!confirm('Forget the mid-roof answer for this jurisdiction? The next lookup or signing will ask again.')) return;
+  _jxInspSend(id, 'DELETE', '').then(ok => { if (ok) { _jxInspState(id).record = null; rerenderJurisdictionPanels(); } });
+}
+function _jxInspSummary(r) {
+  const kinds = (r.applies_to || []).map(k => _jxInspKinds[k] || k).join(', ');
+  const ai = r.status !== 'confirmed';
+  const what = r.mid_roof === 'required' ? '<b>Required</b> on every re-roof'
+    : r.mid_roof === 'conditional' ? `<b>Required only for</b> ${esc(kinds)}`
+    : r.mid_roof === 'not_required' ? (ai ? '<b>Probably not required</b>' : '<b>Not required</b>')
+    : '<b>Unknown</b> — no official answer found';
+  const bits = [what];
+  if (r.timing) bits.push(esc(r.timing));
+  if (r.photos_accepted === true) bits.push('photos accepted instead of a visit');
+  if (r.photos_accepted === false) bits.push('the inspector visits');
+  return bits.join(' &middot; ');
+}
+function _jxInspFormMarkup(id, r) {
+  r = r || {};
+  const opt = (v, t) => `<option value="${v}" ${r.mid_roof === v ? 'selected' : ''}>${t}</option>`;
+  const ph = r.photos_accepted === true ? 'yes' : r.photos_accepted === false ? 'no' : '';
+  const kinds = Object.keys(_jxInspKinds).map(k => `
+      <label class="jx-insp-kind"><input type="checkbox" data-jxi-kind="${id}" value="${esc(k)}"
+        ${(r.applies_to || []).includes(k) ? 'checked' : ''}> ${esc(_jxInspKinds[k])}</label>`).join('');
+  return `
+    <div class="jx-insp-form">
+      <label>Mid-roof inspection
+        <select id="jxi-mid-${id}">
+          ${opt('required', 'Required on every re-roof')}
+          ${opt('conditional', 'Only for some roof types')}
+          ${opt('not_required', 'Not required')}
+        </select></label>
+      <div class="jx-insp-kinds"><span>If only for some roof types, which:</span>${kinds}</div>
+      <label>When (timing)
+        <input type="text" id="jxi-timing-${id}" value="${esc(r.timing || '')}" placeholder="e.g. underlayment on, 25–75% of roofing installed"></label>
+      <label>Photos instead of a visit?
+        <select id="jxi-photos-${id}">
+          <option value="" ${ph === '' ? 'selected' : ''}>Not stated</option>
+          <option value="yes" ${ph === 'yes' ? 'selected' : ''}>Yes, photos accepted</option>
+          <option value="no" ${ph === 'no' ? 'selected' : ''}>No, inspector visits</option>
+        </select></label>
+      <label>Notes for the crew
+        <input type="text" id="jxi-notes-${id}" value="${esc(r.notes || '')}" placeholder="e.g. ladder must be on site"></label>
+      <label>Source link
+        <input type="url" id="jxi-src-${id}" value="${esc(r.source_url || '')}" placeholder="https://"></label>
+      <div class="jx-vp-actions">
+        <button class="jx-vp-btn jx-vp-btn-ok" onclick="jxInspSave('${id}')">Save as confirmed</button>
+        <button class="jx-vp-btn" onclick="jxInspEdit('${id}', false)">Cancel</button>
+      </div>
+    </div>`;
+}
+function _jxInspectionMarkup(sel) {
+  if (!sel) return '';
+  const id = sel.id;
+  const st = _jxInspState(id);
+  _jxInspFetch(id);
+  const canManage = (typeof _meCanViewAll === 'function') && _meCanViewAll();
+  const busy = !!st.busy;
+  const err = st.error ? `<div class="jx-vp-hint">⚠️ ${esc(st.error)}</div>` : '';
+  if (!st.loaded) return `<div class="jx-vp jx-vp-idle jx-insp"><div class="jx-vp-head">🪜 Mid-roof inspection — checking…</div></div>`;
+  const r = st.record;
+  if (canManage && st.editing) return `
+    <div class="jx-vp jx-vp-pending jx-insp">
+      <div class="jx-vp-head">🪜 Mid-roof inspection — ${esc(sel.name)}</div>
+      <div class="jx-vp-sub">What you save here is remembered for every job in ${esc(sel.name)}, and the AI will never overwrite it.</div>
+      ${_jxInspFormMarkup(id, r)}${err}
+    </div>`;
+  if (!r) return `
+    <div class="jx-vp jx-vp-idle jx-insp">
+      <div class="jx-vp-head">🪜 Mid-roof inspection: not looked up yet</div>
+      <div class="jx-vp-sub">Looked up once for ${esc(sel.name)} and remembered for every job there. It also happens on its own when the first job here is signed.</div>
+      <div class="jx-vp-actions">
+        <button class="jx-vp-btn jx-vp-btn-ok" onclick="jxInspLookup('${id}')" ${busy ? 'disabled' : ''}>${busy ? '🔎 Looking it up…' : '🔎 Look it up'}</button>
+        ${canManage ? `<button class="jx-vp-btn" onclick="jxInspEdit('${id}', true)">✎ Enter it</button>` : ''}
+      </div>${err}
+    </div>`;
+  const confirmed = r.status === 'confirmed';
+  const day = esc(String(r.updated_at || '').slice(0, 10));
+  const cls = r.mid_roof === 'required' || r.mid_roof === 'conditional' ? 'jx-vp-fail'
+    : (confirmed && r.mid_roof === 'not_required') ? 'jx-vp-ok' : 'jx-vp-idle';
+  const who = confirmed ? `✅ Confirmed by ${esc(r.updated_by || 'the office')} ${day}`
+    : `🤖 AI lookup ${day} — not confirmed by the office yet`;
+  const src = r.source_url ? ` &middot; <a href="${esc(r.source_url)}" target="_blank" rel="noopener">source</a>` : '';
+  const canConfirm = !confirmed && r.mid_roof !== 'unknown' && !(r.mid_roof === 'conditional' && !(r.applies_to || []).length);
+  const actions = canManage ? `<div class="jx-vp-actions">
+      ${canConfirm ? `<button class="jx-vp-btn jx-vp-btn-ok" onclick="jxInspConfirm('${id}')" ${busy ? 'disabled' : ''}>✓ Confirm</button>` : ''}
+      <button class="jx-vp-btn" onclick="jxInspEdit('${id}', true)" ${busy ? 'disabled' : ''}>✎ Edit</button>
+      ${!confirmed ? `<button class="jx-vp-btn" onclick="jxInspLookup('${id}', true)" ${busy ? 'disabled' : ''}>${busy ? 'Looking…' : '↻ Look again'}</button>` : ''}
+      <button class="jx-vp-btn jx-vp-btn-warn" onclick="jxInspClear('${id}')" ${busy ? 'disabled' : ''}>Clear</button>
+    </div>` : (!confirmed ? '<div class="jx-vp-hint">A manager can confirm or correct this.</div>' : '');
+  return `
+    <div class="jx-vp ${cls} jx-insp">
+      <div class="jx-vp-head">🪜 Mid-roof inspection: ${_jxInspSummary(r)}</div>
+      ${r.notes ? `<div class="jx-vp-sub">${esc(r.notes)}</div>` : ''}
+      <div class="jx-vp-sub">${who}${src}</div>
+      ${actions}${err}
+    </div>`;
+}
+
 // Verification banner: the answer, its caveats, and a re-run.
 function _jxVerifyMarkup() {
   const pj = _pjState();
@@ -6879,6 +7045,7 @@ function permitJurisdictionMarkup() {
         <ul class="jx-code">${points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
         ${baseline.verify_note ? `<div class="jx-verify">⚠️ ${esc(baseline.verify_note)}</div>` : ''}
         ${_jxVerifiedProfileMarkup(sel)}
+        ${_jxInspectionMarkup(sel)}
       </div>`;
   } else if (cand.hasAddr) {
     card = `<p class="jx-note">No exact match for this city — it may be an unincorporated area.

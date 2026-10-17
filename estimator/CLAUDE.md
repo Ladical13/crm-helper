@@ -1286,6 +1286,51 @@ and cites an authoritative page; the manager reading it before clicking approve
 is the accuracy check. Answers do move between runs — Windsor came back
 "2024 I-Codes" on one pass and "2018 IRC" on another.
 
+## Mid-roof inspections (`estimator/inspections.py`)
+
+Some building departments want an inspector on the roof partway through
+(Centennial at 25-75% installed, Louisville at 10-50%), some want only a final
+(Loveland, Mead for asphalt), and some only for tile or battened roofs (Douglas
+County). A crew that shingles past the window strips roofing back off to pass
+the final. So this is not a yes/no field: it is a rule per jurisdiction,
+matched against the roof the job sold. Guarded by `tests/test_mid_roof.py`.
+
+- **Remembered per jurisdiction, in its own file**:
+  `DATA_DIR/jurisdiction_inspections.json`, in the backup zip. It is not a
+  field in `jurisdictions.json` because ⚙ Settings saves that file by PUTting
+  the whole document from a copy loaded earlier, which would silently
+  overwrite anything learned in between.
+- **Looked up once.** `_ensure_inspection_memory()` asks Perplexity only when
+  `needs_lookup()` says nobody has, or when an AI "unknown" is over 30 days
+  old. Both `generate_permit_packet()` and `generate_production_packet()` warm
+  it first, so the first signing in a jurisdiction pays about a cent and every
+  later job reads it for free. Building a PDF on its own never spends.
+  `_check_inspection_prefill()` also fills it ahead of the jobs, once per
+  Colorado day on the estimator's hourly loop: up to 25 jurisdictions
+  (`INSPECTION_PREFILL_LIMIT`), busiest first, taken from the permit
+  jurisdiction on real estimates. It stops at the first lookup that cannot
+  run (spend cap, outage) and goes quiet once those jurisdictions are known.
+  `INSPECTION_PREFILL=0` turns it off.
+- **A manager's answer is final.** It is stored as `confirmed`, and `put()`
+  refuses to let an AI record replace a confirmed one, checked inside the file
+  lock so a lookup already in flight cannot land on top of it.
+- **It fails safe.** An AI "required" is trusted, since a wrong one costs a
+  phone call. An AI "not required" prints as "office to confirm" until someone
+  confirms it, since a wrong one costs a tear-off. An answer with no
+  allowlisted citation is stored as unknown.
+- **Its own prompt** (`INSPECTION_PROMPT_TEMPLATE`), never a key added to the
+  code-year prompt. That prompt was tuned until it named one short code, and a
+  second question on it puts the tuning at risk.
+- **One verdict, three documents.** `_mid_roof_for_estimate()` feeds the
+  permit packet's Inspections section, the work order's red Job Details line
+  (fixed phrases in `crew_spanish.LABELS`), and `send_inspection_heads_up()`.
+  A job with no roof on it, or a repair-only bid, gets none of them
+  (`_mid_roof_applies()`), so the email keeps meaning something.
+- **The rep's email is separate from the "Signed!" one on purpose.** That one
+  goes out in a parallel thread before the jurisdiction has been looked up.
+  This one runs at the end of `_post_sign_pipeline()`, and only when a
+  mid-roof is required or unconfirmed, so it never arrives with nothing to do.
+
 ## Demo mode — one link, no company data
 
 `/estimate/demo/<token>` is a guest session for showing the estimate tool to
