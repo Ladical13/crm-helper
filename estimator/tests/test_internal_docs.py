@@ -232,3 +232,29 @@ def test_the_regenerate_endpoint_returns_both_packet_rows(client, A, monkeypatch
     assert r.status_code == 200
     types = {a['doc_type'] for a in r.get_json()['attachments']}
     assert types == {'work_order', 'material_order'}
+
+
+# ── The owner's contact details on the permit packet ──────────────────────
+
+def test_the_permit_packet_carries_the_customers_phone_and_email(A):
+    """Permit applications ask for the owner's contact details, and the office
+    was looking them up in a second tab."""
+    est = _signed()
+    est['customer']['email'] = 'ada@example.com'
+    txt = _pdf_text(A.build_permit_packet_pdf(est))
+    assert '9705550100' in txt
+    assert 'ada@example.com' in txt
+
+
+def test_the_email_given_at_signing_wins(A):
+    """Same rule as the customer's signed copy: what they typed when signing
+    is the most current address."""
+    est = _signed()
+    est['customer']['email'] = 'old@example.com'
+    est['signature']['email'] = 'new@example.com'
+    txt = _pdf_text(A.build_permit_packet_pdf(est))
+    assert 'new@example.com' in txt and 'old@example.com' not in txt
+
+
+def test_no_email_prints_no_email_row(A):
+    assert 'Email' not in _pdf_text(A.build_permit_packet_pdf(_signed()))

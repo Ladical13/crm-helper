@@ -16920,6 +16920,9 @@ def build_permit_packet_pdf(est):
     kv_row('Job Address',   addr)
     kv_row('Customer',      c.get('name', ''))
     kv_row('Phone',         c.get('phone', ''))
+    # Permit applications ask for the owner's contact details. The address
+    # they gave when signing wins, as it does for their signed copy.
+    kv_row('Email',         (sig.get('email') or c.get('email') or '').strip())
     kv_row('Estimate #',    enum)
     signed_at = sig.get('signed_at', '')
     try:
