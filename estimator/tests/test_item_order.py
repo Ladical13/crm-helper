@@ -247,3 +247,84 @@ def test_the_arrows_are_on_the_pricing_tab():
     assert "moveTradeSection('${trade}',${i},-1)" in js
     assert "moveTradeSection('${trade}',${i},1)" in js
     assert 'canMoveTradeSection(trade, i, -1)' in js
+
+
+# ── ↑↓ on a row in a G/B/B column ─────────────────────────────────────────
+#
+# All three packages share one line_items array; a column shows only the rows
+# included in its package. The arrows swapped with the nearest row in the
+# ARRAY — on a mixed estimate usually a Best-only metal panel the Better column
+# does not show — so the swap happened off screen and the arrow looked dead.
+
+def _tiered(name, rid, tiers, **extra):
+    return dict({'id': rid, 'name': name, 'quantity': 30,
+                 'tiers': {t: {'included': t in tiers, 'material_unit_cost': 10}
+                           for t in ('good', 'better', 'best')}}, **extra)
+
+
+def _mixed():
+    return [_tiered('Shingles', 'shingle', ('good', 'better')),
+            _tiered('Standing Seam', 'metal', ('best',)),
+            _tiered('Drip Edge', 'drip', ('good', 'better', 'best'))]
+
+
+def _order(td):
+    return [i['id'] for i in td['line_items']]
+
+
+def test_a_move_in_a_column_swaps_with_a_row_that_column_shows(tmp_path):
+    td = _run(tmp_path, _estimate(_mixed()),
+              [{'op': 'moveItem', 'trade': 'roofing', 'id': 'shingle', 'dir': 1,
+                'tier': 'better'}])
+    better = [i for i in _order(td) if i != 'metal']
+    assert better == ['drip', 'shingle'], \
+        'the Better column must show the move — the swap went to the hidden metal row'
+
+
+def test_the_arrow_is_dead_when_only_hidden_rows_are_beyond(tmp_path):
+    out = _run_all(tmp_path, _estimate(_mixed()),
+                   [{'op': 'canMoveItem', 'trade': 'roofing', 'id': 'drip', 'dir': 1,
+                     'tier': 'better'}])
+    assert out['_probe'] is False
+    out = _run_all(tmp_path, _estimate(_mixed()),
+                   [{'op': 'canMoveItem', 'trade': 'roofing', 'id': 'drip', 'dir': -1,
+                     'tier': 'better'}])
+    assert out['_probe'] is True
+
+
+def test_a_collapsed_zero_qty_row_is_skipped_on_a_measured_trade(tmp_path):
+    """Non-bundle trades fold unmeasured rows into chips under the column, so
+    those are off screen too."""
+    rows = [_tiered('Gutter', 'g', ('better',)),
+            _tiered('Downspout', 'd', ('better',), quantity=0),
+            _tiered('Guard', 'x', ('better',))]
+    est = {'trades': {'gutters': {'enabled': True, 'mode': 'gbb', 'line_items': rows}}}
+    out = _run_all(tmp_path, est, [{'op': 'moveItem', 'trade': 'gutters', 'id': 'g',
+                                    'dir': 1, 'tier': 'better'}])
+    assert _order(out['trades']['gutters']) == ['x', 'd', 'g']
+
+
+def test_without_a_column_the_move_is_the_plain_array_swap(tmp_path):
+    """The simple-mode list shows every row, so it keeps the neighbour."""
+    td = _run(tmp_path, _estimate(_mixed()),
+              [{'op': 'moveItem', 'trade': 'roofing', 'id': 'shingle', 'dir': 1}])
+    assert _order(td) == ['metal', 'shingle', 'drip']
+
+
+def test_a_column_move_still_stays_inside_its_section(tmp_path):
+    rows = [_tiered('Shingles', 'a', ('better',), section='Garage'),
+            _tiered('Drip Edge', 'b', ('better',), section='Shed')]
+    out = _run_all(tmp_path, _estimate(rows, sections=['Garage', 'Shed']),
+                   [{'op': 'canMoveItem', 'trade': 'roofing', 'id': 'a', 'dir': 1,
+                     'tier': 'better'}])
+    assert out['_probe'] is False
+
+
+def test_the_grid_and_the_arrows_share_one_visibility_rule():
+    with open(os.path.join(os.path.dirname(HERE), 'static', 'app.js'),
+              encoding='utf-8') as fh:
+        js = fh.read()
+    assert 'items.filter(item => liShownInTier(trade, t, item))' in js
+    assert "liMove('${trade}','${item.id}',-1,'${tier}')" in js
+    assert "liMove('${trade}','${item.id}',1,'${tier}')" in js
+    assert 'liCanMove(trade,item,-1,tier)' in js and 'liCanMove(trade,item,1,tier)' in js

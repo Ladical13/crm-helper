@@ -620,15 +620,36 @@ function liSetSection(trade, id, name) {
   setDirty(); rerender();
   if (activePage === 'pricing') renderTradeContent();
 }
-function liCanMove(trade, item, dir) {
+// Is this row on screen in this package's column of the G/B/B grid? The ONE
+// rule renderGBBGrid's `visible` filter and the ↑↓ arrows both use.
+//
+// All three packages share one line_items array, and a column shows only the
+// rows included in its package. The arrows used to swap with the nearest row
+// in the ARRAY, usually a Good-only or Best-only line the Better column does
+// not show, so the swap happened off screen and the arrow looked dead.
+function liShownInTier(trade, tier, item) {
+  if (item?.tiers?.[tier]?.included === false) return false;
+  // A bundle trade shows every row the bundle loaded, priced or not; other
+  // trades collapse unmeasured rows into chips unless the rep pinned them.
+  if (isBundleTrade(trade)) return true;
+  return (parseFloat(item.quantity) || 0) > 0 || !!item._showZero;
+}
+// The row a move swaps with: the nearest one in the same section and, from a
+// G/B/B column, the nearest one that column actually shows. -1 for none.
+function _liMovePartner(trade, item, dir, tier) {
   const items = S.trades[trade].line_items;
   const i = items.indexOf(item);
-  if (i < 0) return false;
+  if (i < 0) return -1;
   const known = new Set(tradeSections(trade));
   const groupOf = it => known.has(itemSection(it)) ? itemSection(it) : '';
   let j = i + dir;
-  while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
-  return j >= 0 && j < items.length;
+  while (j >= 0 && j < items.length &&
+         (groupOf(items[j]) !== groupOf(items[i]) ||
+          (tier && !liShownInTier(trade, tier, items[j])))) j += dir;
+  return (j >= 0 && j < items.length) ? j : -1;
+}
+function liCanMove(trade, item, dir, tier) {
+  return _liMovePartner(trade, item, dir, tier) >= 0;
 }
 /* ── Moving a section ─────────────────────────────────────────────
    Sections could be added, renamed and deleted but never moved, so the order a
@@ -9509,8 +9530,8 @@ function renderGBBGrid(trade) {
     // that stays hidden until a measurement exists can't be costed, renamed or
     // dropped — the rep can't even see what the bundle actually loaded. Other
     // trades keep the measured view: 0-qty rows collapse into the chips below.
-    const visible  = isRoof ? items.filter(inc)
-                            : items.filter(item => inc(item) && (qtyOf(item) > 0 || item._showZero));
+    // liShownInTier is this rule; the ↑↓ arrows read it too.
+    const visible  = items.filter(item => liShownInTier(trade, t, item));
     const excluded = items.filter(item => !inc(item));
     const zeroQty  = isRoof ? [] : items.filter(item => inc(item) && qtyOf(item) === 0 && !item._showZero);
     // Nothing is measured yet, so every row reads 0 — say why rather than let
@@ -9728,8 +9749,8 @@ function renderLiRow(trade, tier, item) {
              onchange="liSetNameSmart('${trade}','${item.id}',this.value)">`
         : `<span class="li-row-name-static">${esc(item.name)}</span>`}
       <div class="li-row-actions">
-        ${ownsMaster ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1)" ${liCanMove(trade,item,-1)?'':'disabled'} title="Move up">↑</button>
-        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1)" ${liCanMove(trade,item,1)?'':'disabled'} title="Move down">↓</button>
+        ${ownsMaster ? `<button class="li-move-btn" onclick="liMove('${trade}','${item.id}',-1,'${tier}')" ${liCanMove(trade,item,-1,tier)?'':'disabled'} title="Move up">↑</button>
+        <button class="li-move-btn" onclick="liMove('${trade}','${item.id}',1,'${tier}')" ${liCanMove(trade,item,1,tier)?'':'disabled'} title="Move down">↓</button>
         <label class="li-vis-toggle${!isVisible?' vis-off':''}" title="${isVisible?'Shown on customer estimate':'Hidden from customer'}">
           <input type="checkbox" ${isVisible?'checked':''} onchange="liSetVisible('${trade}','${item.id}',this.checked)">
           ${isVisible?'👁':'🚫'}
@@ -11269,15 +11290,14 @@ function liDelete(trade, id) {
 // view, the printed estimate, and the production packet as-is. Moves stay
 // inside the item's own section: the swap partner is the nearest item in
 // the same display group, skipping items of other sections in the array.
-function liMove(trade, id, dir) {
+// From a G/B/B column `tier` is that column, and the partner must be a row it
+// shows; see liShownInTier for why a move used to look like it did nothing.
+function liMove(trade, id, dir, tier) {
   const items = S.trades[trade].line_items;
   const i = items.findIndex(x => x.id === id);
   if (i < 0) return;
-  const known = new Set(tradeSections(trade));
-  const groupOf = it => known.has(itemSection(it)) ? itemSection(it) : '';
-  let j = i + dir;
-  while (j >= 0 && j < items.length && groupOf(items[j]) !== groupOf(items[i])) j += dir;
-  if (j < 0 || j >= items.length) return;
+  const j = _liMovePartner(trade, items[i], dir, tier);
+  if (j < 0) return;
   [items[i], items[j]] = [items[j], items[i]];
   setDirty(); renderTotals();
   if (activePage === 'pricing') renderTradeContent();
@@ -17050,13 +17070,13 @@ function renderClientPage() {
       </div>
       <div class="pm-grid client-grid">
         <div class="field-group pm-span2"><label>Name</label>${inp('name', c.name, 'Customer name')}</div>
-        <div class="field-group"><label>Phone</label>${inp('phone', c.phone, '970-555-1234')}</div>
-        <div class="field-group pm-span2"><label>Email</label>${inp('email', c.email, 'name@email.com')}</div>
+        <div class="field-group"><label>Phone</label>${inp('phone', c.phone, '970-555-1234', 'inputmode="tel" autocomplete="tel"')}</div>
+        <div class="field-group pm-span2"><label>Email</label>${inp('email', c.email, 'name@email.com', 'inputmode="email" autocomplete="email" autocapitalize="none"')}</div>
         <div class="field-group"></div>
         <div class="field-group pm-span2"><label>Street</label>${inp('street', a.street, '123 Main St')}</div>
         <div class="field-group"><label>City</label>${inp('city', a.city, 'Loveland')}</div>
         <div class="field-group pm-state"><label>State</label>${inp('state', a.state, 'CO', 'maxlength="2"')}</div>
-        <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10"')}</div>
+        <div class="field-group"><label>Zip</label>${inp('zip', a.zip, '80537', 'maxlength="10" inputmode="numeric" autocomplete="postal-code"')}</div>
       </div>
     </div>` : ''}
 
@@ -18114,17 +18134,26 @@ async function issueRoofCert(pushToCrm) {
 let _crData = null;   // GET /condition-report for the open estimate
 let _crFor  = null;   // which estimate _crData belongs to
 
+// Redraws the Roof Health TAB when its data lands. It used to redraw only when
+// _docGenerator was 'condition', a state that stopped existing when the report
+// moved to its own customer tab (docToggleGenerator now sends 'condition'
+// straight to showClientTab), so the tab sat on "Loading…" for good.
+let _crLoadGeneration = 0;
 async function loadConditionReport() {
-  _crFor = S.estimate_id;
+  const owner = S, id = owner.estimate_id, generation = ++_crLoadGeneration;
+  _crFor = id;
+  let data;
   try {
-    const r = await fetch(`/api/estimates/${S.estimate_id}/condition-report`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || r.statusText);
-    _crData = d;
+    const r = await fetch(`/api/estimates/${id}/condition-report`);
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
   } catch (e) {
-    _crData = {error: e.message};
+    data = {error: e.message};
   }
-  if (_docGenerator === 'condition') renderConditionReportForm();
+  // A slow response must not replace a different estimate's report.
+  if (S !== owner || S.estimate_id !== id || generation !== _crLoadGeneration) return;
+  _crData = data; _crFor = id;
+  if (activePage === 'client' && clientTabNow() === 'roofhealth') renderConditionReportForm();
 }
 
 function renderConditionReportForm() {

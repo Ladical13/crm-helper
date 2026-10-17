@@ -26711,6 +26711,22 @@ def _check_reminders():
 BACKUP_EMAIL = os.environ.get('BACKUP_EMAIL', 'luke@projectoneroofing.com').strip()
 
 
+# Every JSON file the estimator keeps on the volume. They are hand-entered and
+# exist nowhere else: the volume is the only copy. Four were missing until
+# 2026-10-17, so a rebuilt volume would have lost every customer note, the
+# team's names and numbers, the ⚙ Settings choices, and the About Us /
+# Warranty / Certifications / Reviews copy on every proposal
+# (company_content.json is not in git either). tests/test_backup_files.py fails
+# when app.py gains a DATA_DIR json file that is not listed here, so the next
+# one cannot be forgotten the same way.
+_BACKUP_DATA_FILES = (
+    'price_book.json', 'tier_defaults.json', 'config.json', 'sales_goals.json',
+    'permit_defaults.json', 'jurisdictions.json', 'jurisdiction_inspections.json',
+    'commercial_fastening.json', 'company_content.json', 'customer_notes.json',
+    'team.json', 'app_settings.json',
+)
+
+
 def _build_backup_zip(include_uploads=True):
     """Zip the data directory into memory. Returns bytes."""
     buf = io.BytesIO()
@@ -26740,12 +26756,7 @@ def _build_backup_zip(include_uploads=True):
                         zf.write(full, rel)
                     except OSError:
                         pass
-        # Every manager-edited config file belongs here — these are hand-entered
-        # and unrecoverable. permit_defaults/jurisdictions were missing.
-        for cfg in ('price_book.json', 'tier_defaults.json', 'config.json',
-                    'sales_goals.json', 'permit_defaults.json',
-                    'jurisdictions.json', 'jurisdiction_inspections.json',
-                    'commercial_fastening.json'):
+        for cfg in _BACKUP_DATA_FILES:
             full = os.path.join(DATA_DIR, cfg)
             if os.path.exists(full):
                 try:

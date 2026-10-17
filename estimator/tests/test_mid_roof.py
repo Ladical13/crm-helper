@@ -289,9 +289,7 @@ def test_an_unknown_jurisdiction_is_a_404(client):
 
 
 def test_the_memory_is_in_the_backup():
-    src = open(os.path.join(os.path.dirname(A.__file__), 'app.py'), encoding='utf-8').read()
-    block = src[src.index('def _build_backup_zip'):]
-    assert "'jurisdiction_inspections.json'" in block[:block.index('\ndef ', 10)]
+    assert 'jurisdiction_inspections.json' in A._BACKUP_DATA_FILES
 
 
 # ── One verdict, three documents ──────────────────────────────────────────
