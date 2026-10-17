@@ -42,6 +42,14 @@ That turns a failure nobody would notice until a customer mentioned it into one
 that is visible in the place where it gets fixed — it does not make the
 proposals correct.
 
+**It is backed up now** (2026-10-17). It was not even in the backup zip until
+then, and neither were `customer_notes.json`, `team.json` or
+`app_settings.json`: the volume was the only copy of all four. They are in
+`_BACKUP_DATA_FILES`, so the nightly email carries a copy to restore from, and
+`tests/test_backup_files.py` fails when app.py gains a data file the list
+does not name. The repo still does not ship the file. To finish this, pull a
+backup, check `company_content.json` for anything private, and commit it.
+
 **Run `pytest` before every estimator commit.** Two invariants it guards, both
 of which have already broken once:
 
